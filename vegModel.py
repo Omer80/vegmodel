@@ -427,15 +427,16 @@ class onfcModel(object):
             old=result[i]
             while t < tout:
 #                print "t=",t
-                new=old+self.dt*self.rhs_pde(old)
+                new=old+self.dt*self.rhs_pde(old,self.time_elapsed)
                 old=new
                 t+=self.dt
             result[i+1]=old
         self.state=result[-1]
         return t,result
     def rk4_integrate(self,initial_state=None,step=0.1,finish=1000,**kwargs):
-        """ """
-#        print "Integration using rk4 step"
+        """ Integration using The Runge–Kutta method of 4th order as in:
+        https://en.wikipedia.org/wiki/Runge%E2%80%93Kutta_methods#The_Runge%E2%80%93Kutta_method
+        """
         if kwargs:
             self.update_parameters(kwargs)
         if initial_state is None:
@@ -447,11 +448,11 @@ class onfcModel(object):
         for i,tout in enumerate(time[1:]):
             old=result[i]
             while t < tout:
-                k1=self.dt*self.rhs_pde(old,self.time_elapsed)
-                k2=self.dt*self.rhs_pde(old+0.5*k1,self.time_elapsed)
-                k3=self.dt*self.rhs_pde(old+0.5*k2,self.time_elapsed)
-                k4=self.dt*self.rhs_pde(old+k3,self.time_elapsed)
-                new=old+(1.0/6.0)*(k1+2.0*k2+2.0*k3+k4)
+                k1=self.rhs_pde(old,self.time_elapsed)
+                k2=self.rhs_pde(old+0.5*self.dt*k1,self.time_elapsed+(self.dt/2.0))
+                k3=self.rhs_pde(old+0.5*self.dt*k2,self.time_elapsed+(self.dt/2.0))
+                k4=self.rhs_pde(old+self.dt*k3,self.time_elapsed+(self.dt))
+                new=old+(self.dt/6.0)*(k1+2.0*k2+2.0*k3+k4)
                 old=new
                 t+=self.dt
                 self.time_elapsed+=self.dt
