@@ -28,7 +28,7 @@ from sympy import symbols, Matrix,lambdify
 from sympy.utilities.autowrap import ufuncify
 import numpy as np
 import scipy.linalg as linalg
-from scipy.integrate import odeint,ode
+from scipy.integrate import odeint,solve_ivp
 from scipy.optimize import newton_krylov
 from scipy.optimize.nonlin import NoConvergence
 from scipy.optimize import root as root_ode
@@ -41,11 +41,11 @@ Es_1d    ={'rhs':"normal",
            'n':(1024,),
            'l':(256.0,),
            'bc':"periodic",
-           'it':"pseudo_spectral",
+           'it':"rk4",
            'dt':0.1,
            'analyze':True,
            'verbose':True,
-           'setPDE':True}
+           'setPDE':False}
 Es_2d    ={'rhs':"normal",
            'n':(256,256),
            'l':(64.0,64.0),
@@ -84,11 +84,17 @@ def main():
              'omegaf':0.5983986006837702,
              'e':eta_rho[-1][0],'r':eta_rho[-1][1],
              'diffusion':[1.0,150.0/1.2]}
-    eta = onfcModel(Ps_eta,Es_1d,None)
-    rho = onfcModel(Ps_rho,Es_1d,None)
+    eta = vegModel(Ps_eta,Es_1d,"random")
+    rho = vegModel(Ps_rho,Es_1d,"random")
     return 0
+def eta():
+    Ps_eta = {'p':0.7,'l':1.428571429,'g':0.457142857,'a':0.0,
+             'omegaf':0.5983986006837702,
+             'e':eta_rho[0][0],'r':eta_rho[0][1],
+             'diffusion':[1.0,150.0/1.2]}
+    return vegModel(Ps_eta,Es_1d,"random")
 
-class onfcModel(object):
+class vegModel(object):
     def __init__(self,Ps,Es,Vs=None):
         if type(Ps)==str:
             self.Psfname=Ps
@@ -105,6 +111,7 @@ class onfcModel(object):
         self.set_equations()
         self.dt = 0.1
         self.time_elapsed = 0
+        self.set_integrator()
         if self.setup['setPDE']:
             self.p['nd']=len(Es['n'])
             if self.p['nd']==2:
@@ -122,7 +129,6 @@ class onfcModel(object):
             self.X = np.linspace(0,Es['l'][0],Es['n'][0])
             from utilities.laplacian_sparse import create_laplacian #,create_gradient
             self.lapmat=create_laplacian(self.setup['n'],self.setup['l'], self.setup['bc'] , self.p['diffusion'],verbose=self.verbose)
-            self.set_integrator()
             if self.verbose:
                 print("Laplacian created")
         if Vs is not None:
@@ -132,6 +138,7 @@ class onfcModel(object):
     """ Setting up model equations """
     def set_equations(self):
         b,w,t = symbols('b w t')
+        self.Vs_symbols = [b,w]
         self.Ps_symbols={}
         for key in list(self.p.keys()):
             self.Ps_symbols[key] = symbols(key)
@@ -155,11 +162,12 @@ class onfcModel(object):
             self.dbdt_eq = w*b*g*(1.0-b)-b
             self.dwdt_eq = p_t-evap-tras
         """ Creating numpy functions """
-        symeqs = Matrix([self.dbdt_eq,self.dwdt_eq])
-        self.ode   = lambdify((b,w,t,p['p'],p['a'],p['omegaf']),self.sub_parms(symeqs),"numpy",dummify=False)
+        self.symeqs = Matrix([self.dbdt_eq,self.dwdt_eq])
+        self.ode   = lambdify((b,w,t,p['p'],p['a'],p['omegaf']),self.sub_parms(self.symeqs),"numpy",dummify=False)
         self.dbdt  = ufuncify([b,w,t,p['p'],p['a'],p['omegaf']],[self.sub_parms(self.dbdt_eq)])
         self.dwdt  = ufuncify([b,w,t,p['p'],p['a'],p['omegaf']],[self.sub_parms(self.dwdt_eq)])
-        localJac   = symeqs.jacobian(Matrix([b,w]))
+        localJac   = self.symeqs.jacobian(Matrix([b,w]))
+        self.symlocalJac = localJac
         self.localJac = lambdify((b,w),self.sub_parms(localJac),"numpy",dummify=False)
         if self.setup['setPDE'] and self.setup['analyze']:
             self.dbdb = ufuncify([b,w],[self.sub_parms(localJac[0,0])])
@@ -245,7 +253,7 @@ class onfcModel(object):
         return self.ode(b,w,t,self.p['p'],self.p['a'],self.p['omegaf']).T[0]
     def scipy_ode_rhs(self,t,state):
         b,w=state
-        return self.ode(b,w,t,self.p['p'],self.p['a'],self.p['omegaf'])
+        return np.squeeze(self.ode(b,w,t,self.p['p'],self.p['a'],self.p['omegaf']))
     def scipy_ode_jac(self,t,state):
         b,w=state
         return self.localJac(b,w)
@@ -323,25 +331,13 @@ class onfcModel(object):
                 
     def integrate(self,initial_state=None,step=10,
                   max_time = 1000,tol=1.0e-5,plot=False,savefile=None,
-                  create_movie=False,check_convergence=True,plot_update=False,
+                  create_movie=False,check_convergence=True,
                   sim_step=None,**kwargs):
         if kwargs:
             self.update_parameters(kwargs)
         self.filename = savefile
         if initial_state is None:
             initial_state = self.initial_state
-        if plot_update:
-            b,w=initial_state.reshape(self.setup['nvar'],*self.setup['n'])
-            import matplotlib.pyplot as plt
-            plt.ion()
-            fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True)
-            ax1.set_ylim([-0.1,1.0])
-            ax1.set_xlim([0,self.setup['l'][0]])
-            ax1.set_ylabel(r'$b$')
-            ax2.set_ylabel(r'$w$')
-            line1, = ax1.plot(self.X,b,'g')
-            line2, = ax2.plot(self.X,w,'b')
-            plt.draw()
         self.time_elapsed=0
         if sim_step is None:
             self.sim_step=0
@@ -361,11 +357,6 @@ class onfcModel(object):
             print("Step {:4d}, Time = {:5.1f}".format(self.sim_step,self.time_elapsed))
         while not converged and self.time_elapsed<=max_time:
             old_result = result[-1]
-            if plot_update:
-                b,w=old_result.reshape(self.setup['nvar'],*self.setup['n'])
-                line1.set_ydata(b)
-                line2.set_ydata(w)
-                fig.canvas.draw()
             t,result = self.integrator(result[-1],step=step,finish=step)
 #            self.time_elapsed+=t[-1]
             self.sim_step=self.sim_step+1
@@ -392,22 +383,20 @@ class onfcModel(object):
         t = np.arange(0,finish+step, step)
         self.time_elapsed+=finish
         return t,odeint(self.rhs_pde, initial_state, t)
-    def ode_integrate_bdf(self,initial_state=None,step=0.1,finish=1000,
-                          max_dt=10.0e-3,max_order=15,**kwargs):
+    def ode_integrate(self,initial_state,step=0.1,start=0,finish=1000,
+                          method='BDF',**kwargs):
+        """ Using the new scipy interface to BDF method for stiff equations
+        with option to switch to other methods
+        """
         if kwargs:
             self.update_parameters(kwargs)
-        r = ode(self.scipy_ode_rhs, self.scipy_ode_jac).set_integrator('lsoda',max_step=max_dt, method='bdf', max_order_s=max_order)
-        r.set_initial_value(initial_state, 0)
-        t = []
-        result = []
-        t.append(0)
-        result.append(initial_state)
-        while r.successful() and r.t < finish:
-            t.append(r.t+step)
-            result.append(r.integrate(r.t+step))
-        return np.array(t),np.array(result).T
-    def ode_integrate(self,initial_state,step=0.1,start=0,finish=1000,**kwargs):
-        """ """
+        t = np.arange(start,finish+step, step)
+        sol=solve_ivp(fun=self.scipy_ode_rhs,t_span=(start,finish),
+                      y0=initial_state,method=method,
+                      t_eval=t,jac=self.scipy_ode_jac)
+        return sol.t,sol.y
+    def ode_integrate_old(self,initial_state,step=0.1,start=0,finish=1000,**kwargs):
+        """ Using old odeing interface to scipy integrators """
         if kwargs:
             self.update_parameters(kwargs)
         t = np.arange(start,finish+step, step)
