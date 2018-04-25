@@ -45,7 +45,7 @@ Es_1d    ={'rhs':"normal",
            'dt':0.1,
            'analyze':True,
            'verbose':True,
-           'setPDE':False}
+           'setPDE':True}
 Es_2d    ={'rhs':"normal",
            'n':(256,256),
            'l':(64.0,64.0),
@@ -113,15 +113,15 @@ class vegModel(object):
         self.time_elapsed = 0
         self.set_integrator()
         if self.setup['setPDE']:
-            self.p['nd']=len(Es['n'])
-            if self.p['nd']==2:
+            self.setup['nd']=len(Es['n'])
+            if self.setup['nd']==2:
                 self.p['nx'],self.p['ny']=Es['n']
                 self.p['lx'],self.p['ly']=Es['l']
                 self.l=[self.p['lx'],self.p['ly']]
                 self.n=[self.p['nx'],self.p['ny']]
                 self.dg  = tuple([l/float(n) for l,n in zip(self.l,self.n)])
                 self.dx  = self.dg[0]
-            elif self.p['nd']==1:
+            elif self.setup['nd']==1:
                 self.dg=[Es['l'][0]/float(Es['n'][0])]
                 self.dx=self.dg[0]
             self.dx2 = self.dx**2
@@ -309,7 +309,7 @@ class vegModel(object):
             state_plus[j] = state_plus[j]+delta
             state_minus[j] = state_minus[j]-delta
             jacobian.append((self.rhs_pde(state_plus)-self.rhs_pde(state_minus))/(2.0*delta))
-        return np.array(jacobian).T
+        return sparse.csc_matrix(np.array(jacobian).T)
 
     def calc_numeric_pde_eigs(self,state):
         return linalg.eigvals(self.calc_pde_numerical_jacobian(state))
